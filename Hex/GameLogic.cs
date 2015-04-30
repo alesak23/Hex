@@ -53,10 +53,10 @@ namespace Hex
 
 
         #region game parameters
-        public readonly int MaxUnitsPerTile;
-        public readonly int MaxMorale;
+        public readonly int MaxUnitsPerTile = 99;
+        public readonly int MaxMorale = 99;
         public int MovesPerTurn { get; private set; }
-        public readonly int UnitSpeed;
+        public readonly int UnitSpeed = 2;
         #endregion
 
 
@@ -84,6 +84,8 @@ namespace Hex
             currentlyPlayingFaction = 1;
             CurrentTurn = 1;
 
+            MovesPerTurn = 5;
+
         }
 
         public Tile this[int x, int y]
@@ -107,12 +109,20 @@ namespace Hex
         /// <summary>
         /// Checks if a move is currently legal, meaning if there is unit controlled by faction active right now on given tile and if target tile is reachable by that unit this turn.
         /// </summary>
-        public bool IsMoveValid(Move move)
+        public bool IsMoveValid(Move move, out List<Tuple<Tuple<int, int>, int>> range)
         {
+            range = null;
+
             if (GetTile(move.FromTile).OccupiedByFaction.ID != currentlyPlayingFaction)
                 return false;
 
             if (GetTile(move.FromTile).UnitOnTile.UnitMovedThisTurn == true)
+                return false;
+
+            if (UnitSpeed != 2)
+                throw new NotImplementedException("Move checking implemented only for unit speed 2 at the moment");
+
+            if (Distance(move) > UnitSpeed)
                 return false;
 
             return false;
@@ -136,6 +146,216 @@ namespace Hex
 
         }
 
+        /// <summary>
+        /// Computes list of tiles reachable tiles with given amount of moves in one turn. Takes into account terrain, enemy units and all other game rules.
+        /// </summary>
+        /// <param name="from">Starting tile</param>
+        /// <param name="numberOfMoves">How big radius should be</param>
+        /// <remarks>Resulting list does not include starting tile. Includes tiles that need multiple moves to enter and are not "fully" entered yet when moves run out.</remarks>
+        /// <returns>Returns tuples in format ((x, y), moves needed to reach there) </returns>
+        public List<Tuple<Tuple<int, int>, int>> ReachableTilesThisTurn(Tuple<int, int> from, int numberOfMoves)
+        {
+            //flood like algorithm
+
+            List<Tuple<Tuple<int, int>, int>> result = new List<Tuple<Tuple<int, int>, int>>(18);
+
+            if (numberOfMoves <= 0)
+                return result;
+
+            //processed tiles, should never be visited again
+            List<Tuple<int, int>> visited = new List<Tuple<int, int>>(1);
+            //how many moves to get there
+            List<int> visitedMovesNeeded = new List<int>(1);
+
+            //for optimalization. processed but can be visited from active tiles.
+            List<Tuple<int, int>> oldFringe = new List<Tuple<int, int>>(6);
+            List<int> oldFringeMovesNeeded = new List<int>(6);
+
+            List<Tuple<int, int>> turnEndingTileVisited = new List<Tuple<int, int>>(3);
+            List<int> turnEndingTileVisitedMovesNeeded = new List<int>(3);
+
+            //reachable but through end turning interface. singled out because tile could be reached other way later.
+            List<Tuple<int, int>> turnEndingFromInterfaceVisited = new List<Tuple<int, int>>(3);
+            List<int> turnEndingFromInterfaceVisitedMovesNeeded = new List<int>(3);
+
+            //currently active tiles, whose neighbours are to be searched
+            List<Tuple<int, int>> newFringe = new List<Tuple<int, int>>(12);
+            //if tile needs multiple moves to be entered
+            List<int> newFringeRemainingCostToMove = new List<int>(12);
+
+            newFringe.Add(from);
+            newFringeRemainingCostToMove.Add(1);
+
+            int movesElapsed=0;
+            for (int i = 0; i < numberOfMoves; i++)
+            {
+
+                List<Tuple<int, int>> addToNewFringe = new List<Tuple<int, int>>(12);
+                List<int> addToNewFringeRemainingCostToMove = new List<int>(12);
+
+                for (int j = 0; j < newFringe.Count; j++)
+                {
+
+                    if (newFringeRemainingCostToMove[j] > 1)
+                    {
+                        addToNewFringe.Add(newFringe[j]);
+                        addToNewFringeRemainingCostToMove.Add(newFringeRemainingCostToMove[j] - 1);
+                        continue;
+                    }
+
+                    //visit all neighbours
+                    for (int k = 0; k < 6; k++)
+                    {
+                        Tile currentTile = GetTile(newFringe[j]);
+                        Tuple<int, int> currentNeighbourPos = GetNeighbouringTile(newFringe[j], (HexDirections)k);
+                        Tile currentNeighbour = GetTile(currentNeighbourPos);
+
+#if DEBUG
+                        if (visited.Contains(currentNeighbourPos))
+                            System.Diagnostics.Debug.Fail("ReachableTilesThisTurn(...) is bugged", "newFringe is a neighbour to visited (processed) tile");
+#endif
+
+                        if (Tile.MovesRequired(currentTile.Type, currentNeighbour.Type) == int.MaxValue)
+                            continue;
+
+                        if (IsTileUnreachable(currentNeighbourPos))
+                            continue;
+
+                        if (turnEndingTileVisited.Contains(currentNeighbourPos))
+                            continue;
+
+                        if (addToNewFringe.Contains(currentNeighbourPos))
+                            continue;
+
+                        if (newFringe.Contains(currentNeighbourPos))
+                            continue;
+
+                        if (oldFringe.Contains(currentNeighbourPos))
+                            continue;
+
+
+                        //implicitly assumed from this point: can enter neighbouring tile
+
+                        if (IsTileTurnEnding(currentNeighbourPos))
+                        {
+                            turnEndingTileVisited.Add(currentNeighbourPos);
+                            turnEndingTileVisitedMovesNeeded.Add(movesElapsed);
+                            continue;
+                        }
+
+                        if (Tile.IsInterfaceTurnEnding(currentTile.Type, currentNeighbour.Type))
+                        {
+                            turnEndingFromInterfaceVisited.Add(currentNeighbourPos);
+                            turnEndingFromInterfaceVisitedMovesNeeded.Add(movesElapsed);
+                            continue;
+                        }
+
+                        if (!Tile.IsInterfaceTurnEnding(currentTile.Type, currentNeighbour.Type) &&
+                            turnEndingFromInterfaceVisited.Contains(currentNeighbourPos))
+                        {
+                            int indexToRemove = turnEndingFromInterfaceVisited.IndexOf(currentNeighbourPos);
+                            turnEndingFromInterfaceVisited.RemoveAt(indexToRemove);
+                            turnEndingFromInterfaceVisitedMovesNeeded.RemoveAt(indexToRemove);
+                            newFringe.Add(currentNeighbourPos);
+                            newFringeRemainingCostToMove.Add(Tile.MovesRequired(currentTile.Type, currentNeighbour.Type));
+                            continue;
+                        }
+
+                        addToNewFringe.Add(currentNeighbourPos);
+                        addToNewFringeRemainingCostToMove.Add(Tile.MovesRequired(currentTile.Type, currentNeighbour.Type));
+                    }
+
+                }
+
+                for (int j = 0; j < newFringe.Count; j++)
+                {
+                    if (newFringeRemainingCostToMove[j] == 1)
+                    {
+                        oldFringe.Add(newFringe[j]);
+                        oldFringeMovesNeeded.Add(movesElapsed);
+                    }
+                }
+
+                newFringe = addToNewFringe;
+                newFringeRemainingCostToMove = addToNewFringeRemainingCostToMove;
+
+                addToNewFringe = new List<Tuple<int, int>>();
+                addToNewFringeRemainingCostToMove = new List<int>();
+
+
+                List<Tuple<int, int>> addToOldFringe = new List<Tuple<int, int>>(6);
+                List<int> addToOldFringeMovesNeeded = new List<int>(6);
+
+                for (int j = 0; j < oldFringe.Count; j++)
+                {
+                    bool moveToVisited = true;
+
+                    for (int k = 0; k < 6; k++)
+                    {
+                        if (newFringe.Contains(GetNeighbouringTile(oldFringe[j], (HexDirections)k)))
+                        {
+                            addToOldFringe.Add(oldFringe[j]);
+                            addToOldFringeMovesNeeded.Add(oldFringeMovesNeeded[j]);
+                            moveToVisited = false;
+                            break;
+                        }
+                    }
+
+                    if (moveToVisited)
+                    {
+                        visited.Add(oldFringe[j]);
+                        visitedMovesNeeded.Add(oldFringeMovesNeeded[j]);
+                    }
+                }
+
+                oldFringe = addToOldFringe;
+                oldFringeMovesNeeded = addToOldFringeMovesNeeded;
+
+                addToOldFringe = new List<Tuple<int, int>>();
+                addToOldFringeMovesNeeded = new List<int>();
+
+                movesElapsed = i + 1;
+            }
+
+            for (int i = 0; i < visited.Count; i++)
+                result.Add(Tuple.Create(visited[i], visitedMovesNeeded[i]));
+
+            for (int i = 0; i < oldFringe.Count; i++)
+                result.Add(Tuple.Create(oldFringe[i], oldFringeMovesNeeded[i]));
+
+            for (int i = 0; i < turnEndingTileVisited.Count; i++)
+                result.Add(Tuple.Create(turnEndingTileVisited[i], turnEndingTileVisitedMovesNeeded[i]));
+
+            for (int i = 0; i < turnEndingFromInterfaceVisited.Count; i++)
+                result.Add(Tuple.Create(turnEndingFromInterfaceVisited[i], turnEndingFromInterfaceVisitedMovesNeeded[i]));
+
+            for (int i = 0; i < newFringe.Count; i++)
+                result.Add(Tuple.Create(newFringe[i], numberOfMoves));
+
+            result.Remove(Tuple.Create(from, 0));
+
+            return result;
+        }
+
+        /// <summary>
+        /// Checks if entering given tile is turn-ending. Does not account for interface between tiles.
+        /// </summary>
+        public bool IsTileTurnEnding(Tuple<int, int> tile)
+        {
+            if (GetTile(tile).UnitOnTile != Unit.Empty) //&& GetTile(tile).UnitOnTile.OwnedByFaction != currentlyPlayingFaction)
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Checks if any unit can enter given tile.
+        /// </summary>
+        public bool IsTileUnreachable(Tuple<int, int> tile)
+        {
+            return GetTile(tile).UnitOnTile.UnitCount >= MaxUnitsPerTile;
+        }
+
 
         /*
         /// <summary>
@@ -155,7 +375,7 @@ namespace Hex
         /// <summary>
         /// Returns coordinates of neighbouring tile. If game board borders are taken into account (default), returns same tile if source tile or resulting neighbour are outside of board.
         /// </summary>
-        public Tuple<int, int> NeighbouringTile(Tuple<int, int> tile, HexDirections dir, bool ignoreBorders = false)
+        public Tuple<int, int> GetNeighbouringTile(Tuple<int, int> tile, HexDirections dir, bool ignoreBorders = false)
         {
             Tuple<int, int> result;
             switch (dir)
@@ -182,22 +402,22 @@ namespace Hex
                     throw new ArgumentException("dir", "direction entered is not valid");
             }
 
-            if (ignoreBorders == false &&
-                (
-                    result.Item1 < 0 ||
-                    result.Item2 < 0 ||
-                    result.Item1 > SizeX - 1 ||
-                    result.Item2 > SizeY - 1
-                )
-            )
+            if (ignoreBorders == false && IsOutOfBounds(result))
                 result = tile;
 
             return result;
         }
 
+        public bool IsOutOfBounds(Tuple<int, int> tile)
+        {
+            return tile.Item1 < 0 ||
+                    tile.Item2 < 0 ||
+                    tile.Item1 > SizeX - 1 ||
+                    tile.Item2 > SizeY - 1;
+        }
 
 
-        //metoda: je tenhle krok validni?
+
 
 
 
@@ -288,19 +508,35 @@ namespace Hex
             UnitOnTile = Unit.Empty;
         }
 
+        //[0,0] from land to land, [0,1] from land to water...
         //Land, Water, City, Harbor, Capital
-        private static int[,] passabilityMatrix = new int[5, 5]{
-                {1, int.MaxValue,1,2,1},
+        private static int[,] movesRequired = new int[5, 5]{
+                {1, int.MaxValue,1,1,1},
                 {2,1,2,2,2},
-                {1,int.MaxValue,1,2,1},
+                {1,int.MaxValue,1,1,1},
                 {1,1,1,1,1},
-                {1,int.MaxValue,1,2,1}
+                {1,int.MaxValue,1,1,1}
             };
 
         public static int MovesRequired(TerrainTypes from, TerrainTypes to)
         {
-            return passabilityMatrix[(int)from, (int)to];
+            return movesRequired[(int)from, (int)to];
         }
+
+        private static bool[,] turnEndingInterface = new bool[5, 5]{
+                {false, false,true,true,true},
+                {true,false,true,true,true},
+                {false,false,true,true,true},
+                {false,false,true,true,true},
+                {false,false,true,true,true}
+            };
+
+        public static bool IsInterfaceTurnEnding(TerrainTypes from, TerrainTypes to)
+        {
+            return turnEndingInterface[(int)from, (int)to];
+        }
+
+
 
         /*
         /// <summary>
