@@ -433,7 +433,7 @@ namespace Hex
         {
 
 
-            double waterThreshold = 0.4;
+            double waterThreshold = 0.45;
             //creates random summand that is added
             Func<Random, double, double, bool, double> randomSummand = ((r, level, totalLevels, isCentral) =>
             {
