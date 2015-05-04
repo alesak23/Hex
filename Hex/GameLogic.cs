@@ -1,17 +1,14 @@
 ﻿using System.Collections.Generic;
 using System;
+using System.Linq;
 
 namespace Hex
 {
-    /*game logic
-     * max units on tile = 99
-     * max morale = 99
-     * max moves per turn = 5
-     *  
-     * 
-     * 
-     * */
 
+
+
+    public enum TerrainTypes { Land, Water, City, Harbor, Capital }
+    public enum HexDirections { Up, UpRight, DownRight, Down, DownLeft, LeftUp, U = Up, UR = UpRight, DR = DownRight, D = Down, DL = DownLeft, LU = LeftUp }
 
 
     /// <summary>
@@ -20,7 +17,7 @@ namespace Hex
     /// <remarks>
     /// 
     /// </remarks>
-    public class GameSession
+    public class GameLogic
     {
 
 
@@ -32,10 +29,7 @@ namespace Hex
         /// </remarks>
         public Tile[,] Tiles { get; private set; }
 
-        public Tile GetTile(Tuple<int, int> tile)
-        {
-            return Tiles[tile.Item1, tile.Item2];
-        }
+
 
         /// <summary>
         /// Horizontal size of game board.
@@ -51,6 +45,7 @@ namespace Hex
         private readonly int _sizeX;
         private readonly int _sizeY;
 
+        private Random random;
 
         #region game parameters
         public readonly int MaxUnitsPerTile = 99;
@@ -60,7 +55,7 @@ namespace Hex
         #endregion
 
 
-        public Faction CurrentlyPlaingFaction { get { return Factions[currentlyPlayingFaction]; } }
+
 
         /// <summary>
         /// Counts turns from beginning of the game. Turn is understood as number of times each player played (but game begins with turn 1).
@@ -75,16 +70,22 @@ namespace Hex
         private int currentlyPlayingFaction;
 
 
-        public GameSession(int sizeX, int sizeY, int numOfFactions)
+
+        public Faction CurrentlyPlaingFaction { get { return Factions[currentlyPlayingFaction]; } private set { currentlyPlayingFaction = value.ID; } }
+
+        public GameLogic(int sizeX, int sizeY, int seed)
         {
             _sizeX = sizeX;
             _sizeY = sizeY;
             Tiles = new Tile[sizeX, sizeY];
-            Factions = Faction.CreateFactions(numOfFactions);
+            Factions = Faction.CreateFactions(4);
             currentlyPlayingFaction = 1;
             CurrentTurn = 1;
 
             MovesPerTurn = 5;
+
+            random = new Random(seed);
+            Tiles = CreateTerrain(random);
 
         }
 
@@ -126,6 +127,11 @@ namespace Hex
                 return false;
 
             return false;
+        }
+
+        public Tile GetTile(Tuple<int, int> tile)
+        {
+            return Tiles[tile.Item1, tile.Item2];
         }
 
         /// <summary>
@@ -186,7 +192,7 @@ namespace Hex
             newFringe.Add(from);
             newFringeRemainingCostToMove.Add(1);
 
-            int movesElapsed=0;
+            int movesElapsed = 0;
             for (int i = 0; i < numberOfMoves; i++)
             {
 
@@ -417,6 +423,108 @@ namespace Hex
         }
 
 
+        /// <summary>
+        /// Creates terrain with given seed.
+        /// </summary>
+        /// <remarks>
+        /// Uses diamond-square algorithm.
+        /// </remarks>
+        private Tile[,] CreateTerrain(Random random)
+        {
+
+
+            double waterThreshold = 0.4;
+            //creates random summand that is added
+            Func<Random, double, double, bool, double> randomSummand = ((r, level, totalLevels, isCentral) =>
+            {
+                if (level == 1 && isCentral)
+                    return r.NextDouble() * 0.3 - 0.75;
+
+                return (r.NextDouble() * 1.0 - 0.5) / Math.Pow(1.1, level + 1);
+
+            });
+            Func<Random, double> initialCornerValues = ((r) => waterThreshold + r.NextDouble() / 3);
+
+
+
+            int mapSize;
+            int levels;
+            for (int i = 0; ; i++)
+            {
+                if (SizeX <= Math.Pow(2, i) + 1 && SizeY <= Math.Pow(2, i) + 1)
+                {
+                    mapSize = (int)Math.Pow(2, i) + 1;
+                    levels = i;
+                    break;
+                }
+            }
+            double[,] heightMap = new double[mapSize, mapSize];
+
+            heightMap[0, 0] = initialCornerValues(random);
+            heightMap[mapSize - 1, 0] = initialCornerValues(random);
+            heightMap[0, mapSize - 1] = initialCornerValues(random);
+            heightMap[mapSize - 1, mapSize - 1] = initialCornerValues(random);
+
+            for (int level = 1; level <= levels; level++)
+            {
+                for (int i = 0; i < (int)Math.Pow(2, level - 1); i++)
+                {
+                    for (int j = 0; j < (int)Math.Pow(2, level - 1); j++)
+                    {
+                        int squareSize = (mapSize - 1) / (int)Math.Pow(2, level - 1);
+                        double[] corners = new double[]{
+                            heightMap[squareSize*(j),squareSize*(i+1)],
+                            heightMap[squareSize*(j+1),squareSize*(i+1)],
+                            heightMap[squareSize*(j+1),squareSize*(i)],
+                            heightMap[squareSize*(j),squareSize*(i)]
+                        };
+
+                        double[] newNumbers = new double[5];
+                        newNumbers[0] = corners.Average() + randomSummand(random, level, levels, true);
+                        newNumbers[1] = ((newNumbers[0] + corners[0] + corners[1]) / 3d) + randomSummand(random, level, levels, false);
+                        newNumbers[2] = ((newNumbers[0] + corners[1] + corners[2]) / 3d) + randomSummand(random, level, levels, false);
+                        newNumbers[3] = ((newNumbers[0] + corners[2] + corners[3]) / 3d) + randomSummand(random, level, levels, false);
+                        newNumbers[4] = ((newNumbers[0] + corners[3] + corners[0]) / 3d) + randomSummand(random, level, levels, false);
+
+                        heightMap[squareSize * (j) + squareSize / 2, squareSize * (i) + squareSize / 2] = newNumbers[0];
+                        heightMap[squareSize * (j) + squareSize / 2, squareSize * (i + 1)] = newNumbers[1];
+                        heightMap[squareSize * (j + 1), squareSize * (i) + squareSize / 2] = newNumbers[2];
+                        heightMap[squareSize * (j) + squareSize / 2, squareSize * (i)] = newNumbers[3];
+                        heightMap[squareSize * (j), squareSize * (i) + squareSize / 2] = newNumbers[4];
+                    }
+                }
+            }
+
+            Tile[,] result = new Tile[SizeX, SizeY];
+            for (int i = 0; i < SizeY; i++)
+            {
+                for (int j = 0; j < SizeX; j++)
+                {
+                    if (heightMap[j, i] < waterThreshold)
+                        result[j, i] = new Tile(TerrainTypes.Water);
+                    else result[j, i] = new Tile(TerrainTypes.Land);
+                }
+            }
+
+            Tuple<int, int>[] factionCapitals = new Tuple<int, int>[]{
+                Tuple.Create(1,1), Tuple.Create(1,SizeY-2), Tuple.Create(SizeX-2,1), Tuple.Create(SizeX-2,SizeY-2)};
+
+            for (int i = 0; i < factionCapitals.Length; i++)
+            {
+                int x = factionCapitals[i].Item1;
+                int y = factionCapitals[i].Item2;
+                result[x, y] = new Tile(TerrainTypes.Capital);
+                result[x, y].OccupiedByFaction = Factions[i];
+                for (int j = 0; j < 6; j++)
+                {
+                    Tuple<int, int> neighbourPos = GetNeighbouringTile(factionCapitals[i], (HexDirections)j);
+                    result[neighbourPos.Item1, neighbourPos.Item2] = new Tile(TerrainTypes.Land);
+                    result[neighbourPos.Item1, neighbourPos.Item2].OccupiedByFaction = Factions[i];
+                }
+            }
+
+            return result;
+        }
 
 
 
@@ -425,28 +533,30 @@ namespace Hex
         /// <summary>
         /// Intended for creating a copy, does not call other constructors.
         /// </summary>
-        private GameSession(int sizeX, int sizeY, Tile[,] tiles, Faction[] factions)
+        private GameLogic(int sizeX, int sizeY, Tile[,] tiles, Faction[] factions, Random random, int currentTurn, int numberOfMovesRemaining, int currentlyPlayingFaction)
         {
             _sizeX = sizeX;
             _sizeY = sizeY;
             Tiles = tiles;
             Factions = factions;
+            this.random = random;
+            this.CurrentTurn = currentTurn;
+            this.NumberOfMovesRemaining = numberOfMovesRemaining;
+            this.currentlyPlayingFaction = currentlyPlayingFaction;
         }
 
-        //TODO: predelat
         /// <summary>
         /// Creates copy of current game state (including copy of all reference members), intended to increase safety while passing data to scripted AI or other components.
         /// </summary>
         /// <returns>Return new copy.</returns>
-        public GameSession CreateCompleteCopy()
+        public GameLogic CreateCompleteCopy()
         {
-            throw new NotImplementedException();
             Tile[,] tiles = new Tile[SizeX, SizeY];
             for (int i = 0; i < tiles.GetLength(0); i++)
             {
                 for (int j = 0; j < tiles.GetLength(1); j++)
                 {
-                    //tiles[i, j] = Tiles[i, j].CreateCompleteCopy();
+                    tiles[i, j] = Tiles[i, j].CreateCompleteCopy();
                 }
             }
 
@@ -456,7 +566,7 @@ namespace Hex
                 factions[i] = Factions[i].CreateCompleteCopy();
             }
 
-            GameSession copy = new GameSession(SizeX, SizeY, tiles, factions);
+            GameLogic copy = new GameLogic(SizeX, SizeY, tiles, factions, random, CurrentTurn, NumberOfMovesRemaining, currentlyPlayingFaction);
             return copy;
         }
         #endregion
@@ -464,7 +574,9 @@ namespace Hex
 
     }
 
-    public enum HexDirections { Up, UpRight, DownRight, Down, DownLeft, LeftUp, U = Up, UR = UpRight, DR = DownRight, D = Down, DL = DownLeft, LU = LeftUp }
+
+
+
 
     public struct Move
     {
@@ -538,14 +650,14 @@ namespace Hex
 
 
 
-        /*
+
         /// <summary>
         /// Creates copy of this tile (including copy of all reference members).
         /// </summary>
         public Tile CreateCompleteCopy()
         {
-            return new Tile() { Type = this.Type, UnitCount = this.UnitCount, UnitMorale = this.UnitMorale };
-        }*/
+            return new Tile(this.Type) { UnitOnTile = this.UnitOnTile.CreateCompleteCopy(), OccupiedByFaction = this.OccupiedByFaction.CreateCompleteCopy() };
+        }
     }
 
     public class Unit
@@ -555,16 +667,23 @@ namespace Hex
         public bool UnitMovedThisTurn { get; set; }
         public int OwnedByFaction { get; set; }
 
+        public readonly static Unit Empty;
+
         static Unit()
         {
             Empty = new Unit();
-            Empty.OwnedByFaction = 0;
+            Empty.OwnedByFaction = -1;
         }
 
-        public readonly static Unit Empty;
+        public Unit CreateCompleteCopy()
+        {
+            return new Unit() { UnitCount = this.UnitCount, UnitMorale = this.UnitMorale, UnitMovedThisTurn = this.UnitMovedThisTurn, OwnedByFaction = this.OwnedByFaction };
+        }
+
+
     }
 
-    public enum TerrainTypes { Land, Water, City, Harbor, Capital }
+
 
     /// <summary>
     /// Represents faction in game logic and corresponds to a player, either AI or human controlled.
@@ -578,11 +697,16 @@ namespace Hex
             this.ID = ID;
         }
 
+        /// <summary>
+        /// Creates array of factions. Last faction in array is empty faction.
+        /// </summary>
+        /// <param name="numOfFactions">Number of playable factions.</param>
+        /// <returns></returns>
         public static Faction[] CreateFactions(int numOfFactions)
         {
             Faction[] array = new Faction[numOfFactions];
-            array[0] = Faction.Empty;
-            for (int i = 1; i < numOfFactions + 1; i++)
+            //array[numOfFactions] = Faction.Empty;
+            for (int i = 0; i < numOfFactions; i++)
             {
                 array[i] = new Faction(i);
             }
@@ -591,7 +715,35 @@ namespace Hex
 
         static Faction()
         {
-            Empty = new Faction(0);
+            Empty = new Faction(-1);
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (obj is Faction)
+                return ((Faction)obj).ID == ID;
+            else
+                return base.Equals(obj);
+        }
+
+        public static bool operator ==(Faction a, Faction b)
+        {
+            if (System.Object.ReferenceEquals(a, b))
+            {
+                return true;
+            }
+
+            if (((object)a == null) || ((object)b == null))
+            {
+                return false;
+            }
+
+            return a.Equals(b);
+        }
+
+        public static bool operator !=(Faction a, Faction b)
+        {
+            return !(a == b);
         }
 
         /// <summary>
